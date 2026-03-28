@@ -1,0 +1,42 @@
+<div id="rm_settings">
+    <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <b>💕 Relationship Meter</b>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down"></div>
+        </div>
+        <div class="inline-drawer-content">
+            <div class="flex-container" style="flex-wrap:wrap;flex-direction:column;gap:4px;">
+                <label class="checkbox_label" for="rm-s-enabled">
+                    <input id="rm-s-enabled" type="checkbox" />
+                    <span>เปิดใช้งาน Extension</span>
+                </label>
+                <label class="checkbox_label" for="rm-s-bar">
+                    <input id="rm-s-bar" type="checkbox" />
+                    <span>แสดงแถบคะแนน (Floating Bar)</span>
+                </label>
+                <label class="checkbox_label" for="rm-s-score-ai">
+                    <input id="rm-s-score-ai" type="checkbox" />
+                    <span>คิดคะแนนจากข้อความ AI/NPC Tracking</span>
+                </label>
+                <label class="checkbox_label" for="rm-s-score-user">
+                    <input id="rm-s-score-user" type="checkbox" />
+                    <span>คิดคะแนนจากข้อความ User</span>
+                </label>
+                <hr style="border-color:rgba(255,255,255,0.1);width:100%;margin:6px 0;">
+                <div style="display:flex;align-items:center;justify-content:space-between;width:100%;">
+                    <span style="font-size:12px;">🎨 สีหลัก (Primary Color)</span>
+                    <input type="color" id="rm-s-color1" style="width:28px;height:24px;padding:0;border:none;border-radius:4px;cursor:pointer;background:none;">
+                </div>
+                <div style="display:flex;align-items:center;justify-content:space-between;width:100%;">
+                    <span style="font-size:12px;">🎨 สีรอง (Secondary Color)</span>
+                    <input type="color" id="rm-s-color2" style="width:28px;height:24px;padding:0;border:none;border-radius:4px;cursor:pointer;background:none;">
+                </div>
+                <hr style="border-color:rgba(255,255,255,0.1);width:100%;margin:6px 0;">
+                <div class="flex" style="flex-wrap:wrap;gap:4px;">
+                    <button id="rm-btn-manual" class="menu_button" style="width:auto;">✏️ ปรับคะแนน</button>
+                    <button id="rm-btn-reset" class="menu_button" style="width:auto;">🔄 รีเซ็ตทั้งหมด</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

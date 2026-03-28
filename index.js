@@ -323,10 +323,20 @@ function fireConfetti(isUp, levelColor) {
             if (Date.now() < end) requestAnimationFrame(frame);
         }());
     } else {
-        window.confetti({
-            particleCount: 40, spread: 80, gravity: 2,
-            origin: { y: 0.4 }, colors: ['#555', '#333', '#444'], scalar: 0.6
-        });
+        // Use withered roses if supported, otherwise fallback to dark red "petals"
+        try {
+            const rose = window.confetti.shapeFromText({ text: '🥀', scalar: 3 });
+            window.confetti({
+                particleCount: 25, spread: 90, gravity: 1.2, ticks: 300,
+                origin: { y: 0.1 }, shapes: [rose], scalar: 2
+            });
+        } catch (e) {
+            window.confetti({
+                particleCount: 50, spread: 100, gravity: 1.5, ticks: 300,
+                origin: { y: 0.1 }, colors: ['#4a0404', '#8b0000', '#2b0000', '#111111'],
+                shapes: ['circle', 'square'], scalar: 1.2
+            });
+        }
     }
 }
 
@@ -352,7 +362,7 @@ function showLevelChangeOverlay(npcName, level, isUp) {
     $('body').append(`
 <div id="rm-overlay" style="
     position:fixed;inset:0;z-index:9999999;
-    background:rgba(0,0,0,0.85);
+    background:radial-gradient(circle at center, ${level.glow}44 0%, rgba(0,0,0,0.92) 80%);
     display:flex;flex-direction:column;align-items:center;justify-content:center;
     animation:rmFadeIn 0.35s ease;
     font-family:'Segoe UI',Tahoma,sans-serif;
@@ -401,6 +411,7 @@ function showLevelChangeOverlay(npcName, level, isUp) {
 // ============================================================
 function renderPopup() {
     try {
+    const currentScrollLeft = $('#rm-popup .rm-npc-btn-container').length ? $('#rm-popup .rm-npc-btn-container').scrollLeft() : 0;
     $('#rm-popup').remove(); // Always clean up first
     console.log('💕 [RM] renderPopup called, npcsData keys:', Object.keys(npcsData), 'charName:', state.charName);
     let items = Object.keys(npcsData).map(k => ({ name: k, ...npcsData[k] }));
@@ -409,8 +420,12 @@ function renderPopup() {
     if (!window.rmPopupSelectedNpc || !npcsData[window.rmPopupSelectedNpc]) {
         window.rmPopupSelectedNpc = items[0].name;
     }
-    let currNpc = npcsData[window.rmPopupSelectedNpc] || items[0];
-    // Ensure all required properties exist
+    
+    // Make sure we have the pure base object and inject its name key
+    let rawNpc = npcsData[window.rmPopupSelectedNpc];
+    let currNpc = rawNpc ? { name: window.rmPopupSelectedNpc, ...rawNpc } : items[0];
+    
+    // Ensure all required properties exist (fallback name is only a safety net)
     currNpc = { points: 0, levelId: 6, lastChange: 0, history: [], avatar: '', desc: '', name: 'Unknown', ...currNpc };
     const level = getLevel(currNpc.points);
 
@@ -497,8 +512,8 @@ function renderPopup() {
     }
 
     const s = extension_settings[EXT_NAME] || {};
-    const bg1 = s.bg_color1 || '#0E051A';
-    const bg2 = s.bg_color2 || '#200C34';
+    const bg1 = '#0E051A';
+    const bg2 = '#200C34';
 
     const av = currNpc.avatar || 'https://i.ibb.co/VvzYW3G/default-avatar.png';
     const lore = currNpc.desc || 'ไม่มีประวัติ ตัวละครถูกสร้างผ่าน Tracker';
@@ -573,9 +588,12 @@ function renderPopup() {
 
     $(document).off('click', '.rm-npc-btn').on('click', '.rm-npc-btn', function () {
         window.rmPopupSelectedNpc = $(this).data('name');
-        $('#rm-popup').remove();
         renderPopup();
     });
+
+    if (currentScrollLeft > 0) {
+        setTimeout(() => $('#rm-popup .rm-npc-btn-container').scrollLeft(currentScrollLeft), 0);
+    }
 
     } catch (err) {
         console.error('💕 [RM] Error in renderPopup:', err);
@@ -585,7 +603,7 @@ function renderPopup() {
 // ============================================================
 // ⚙️ UI — SETTINGS PANEL (Extensions tab)
 // ============================================================
-function loadSettings() {
+async function createSettingsUI() {
     if (!extension_settings[EXT_NAME]) {
         extension_settings[EXT_NAME] = {
             enabled: true,
@@ -593,77 +611,61 @@ function loadSettings() {
             score_ai: true,
             score_user: true,
             btn_pos: null,
-            btn_color1: '#7B1FA2',
-            btn_color2: '#E91E8C',
-            bg_color1: '#0e051a',
-            bg_color2: '#200c34'
+            color_primary: '#7B1FA2',
+            color_secondary: '#E91E8C'
         };
-    } else if (extension_settings[EXT_NAME].bar_visible === true) {
-        extension_settings[EXT_NAME].bar_visible = false;
-        saveSetting('bar_visible', false);
     }
     const s = extension_settings[EXT_NAME];
 
-    const html = `
-<div class="rm-settings-block">
-    <div class="inline-drawer">
-        <div class="inline-drawer-toggle inline-drawer-header">
-            <b>💕 Relationship Meter</b>
-            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-        </div>
-        <div class="inline-drawer-content" style="display:none;">
-            ${makeToggle('rm-s-enabled', 'เปิดใช้งาน Extension', s.enabled)}
-            ${makeToggle('rm-s-bar', 'แสดงแถบคะแนน (Floating Bar)', s.bar_visible)}
-            ${makeToggle('rm-s-score-ai', 'คิดคะแนนจากข้อความ AI/NPC Tracking', s.score_ai)}
-            ${makeToggle('rm-s-score-user', 'คิดคะแนนจากข้อความ User', s.score_user)}
-            ${makeColorInput('rm-s-btn1', 'ปุ่มไล่ระดับล่างซ้าย (BTN 1)', s.btn_color1 || '#7B1FA2')}
-            ${makeColorInput('rm-s-btn2', 'ปุ่มไล่ระดับบนขวา (BTN 2)', s.btn_color2 || '#E91E8C')}
-            ${makeColorInput('rm-s-bg1', 'ฉากหลังมุมบนซ้าย (BG 1)', s.bg_color1 || '#0E051A')}
-            ${makeColorInput('rm-s-bg2', 'ฉากหลังมุมล่างขวา (BG 2)', s.bg_color2 || '#200C34')}
-        </div>
-    </div>
-</div>`;
+    // Clean up old unused color keys
+    delete s.btn_color1; delete s.btn_color2; delete s.bg_color1; delete s.bg_color2;
 
-    $('.rm-settings-block').remove();
-    $('#extensions_settings').append(html);
+    const extensionUrl = import.meta.url.replace('/index.js', '');
+    let settingsHtml;
+    try {
+        settingsHtml = await $.get(`${extensionUrl}/settings.html`);
+    } catch (err) {
+        console.error('💕 [RM] Failed to load settings.html', err);
+        return;
+    }
 
-    $('.rm-settings-block .inline-drawer-toggle').on('click', function () {
-        $(this).next('.inline-drawer-content').slideToggle(180);
+    $('#rm_settings').remove();
+    $('#extensions_settings2').append(settingsHtml);
+
+    // Apply saved values to the loaded HTML form
+    $('#rm-s-enabled').prop('checked', !!s.enabled);
+    $('#rm-s-bar').prop('checked', !!s.bar_visible);
+    $('#rm-s-score-ai').prop('checked', !!s.score_ai);
+    $('#rm-s-score-user').prop('checked', !!s.score_user);
+    $('#rm-s-color1').val(s.color_primary || '#7B1FA2');
+    $('#rm-s-color2').val(s.color_secondary || '#E91E8C');
+
+    // Make the standard inline drawer toggle work for our injected HTML
+    $('#extensions_settings2').off('click', '#rm_settings .inline-drawer-toggle').on('click', '#rm_settings .inline-drawer-toggle', function () {
+        $(this).next('.inline-drawer-content').stop().slideToggle(200);
         $(this).find('.inline-drawer-icon').toggleClass('down up');
     });
 
+    // Event bindings
     $('#rm-s-enabled').on('change', function () {
         saveSetting('enabled', this.checked);
-        if (this.checked) { mountFloatButton(); renderBar(); }
-        else { $('#rm-float-btn, #rm-bar').remove(); }
+        if (this.checked) {
+            mountFloatButton();
+            renderBar();
+            window.rmBindEvents();
+        } else {
+            window.rmUnbindEvents();
+        }
     });
     $('#rm-s-bar').on('change', function () { saveSetting('bar_visible', this.checked); renderBar(); });
     $('#rm-s-score-ai').on('change', function () { saveSetting('score_ai', this.checked); });
     $('#rm-s-score-user').on('change', function () { saveSetting('score_user', this.checked); });
 
-    $('#rm-s-btn1').on('change', function () { saveSetting('btn_color1', $(this).val()); $('#rm-float-btn').remove(); mountFloatButton(); });
-    $('#rm-s-btn2').on('change', function () { saveSetting('btn_color2', $(this).val()); $('#rm-float-btn').remove(); mountFloatButton(); });
-    $('#rm-s-bg1').on('change', function () { saveSetting('bg_color1', $(this).val()); });
-    $('#rm-s-bg2').on('change', function () { saveSetting('bg_color2', $(this).val()); });
-}
+    $('#rm-s-color1').on('change', function () { saveSetting('color_primary', $(this).val()); $('#rm-float-btn').remove(); mountFloatButton(); });
+    $('#rm-s-color2').on('change', function () { saveSetting('color_secondary', $(this).val()); $('#rm-float-btn').remove(); mountFloatButton(); });
 
-function makeToggle(id, label, checked) {
-    return `<div style="display:flex;align-items:center;justify-content:space-between;
-        padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05);">
-        <span style="font-size:12px;">${label}</span>
-        <label class="checkbox_label" for="${id}" style="margin:0;">
-            <input type="checkbox" id="${id}" ${checked ? 'checked' : ''}>
-            <span class="checkbox_box"></span>
-        </label>
-    </div>`;
-}
-
-function makeColorInput(id, label, val) {
-    return `<div style="display:flex;align-items:center;justify-content:space-between;
-        padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05);">
-        <span style="font-size:12px;">${label}</span>
-        <input type="color" id="${id}" value="${val}" style="width:28px;height:24px;padding:0;border:none;border-radius:4px;cursor:pointer;background:none;">
-    </div>`;
+    $('#rm-btn-manual').on('click', function () { window.rmManual(); });
+    $('#rm-btn-reset').on('click', function () { window.rmReset(); });
 }
 
 function saveSetting(key, val) {
@@ -678,8 +680,8 @@ function mountFloatButton() {
     if ($('#rm-float-btn').length) return;
 
     const s = extension_settings[EXT_NAME] || {};
-    const c1 = s.btn_color1 || '#7B1FA2';
-    const c2 = s.btn_color2 || '#E91E8C';
+    const c1 = s.color_primary || '#7B1FA2';
+    const c2 = s.color_secondary || '#E91E8C';
 
     $('body').append(`
 <button id="rm-float-btn" title="Relationship Meter" style="
@@ -879,77 +881,103 @@ window.rmEditProfile = function (name) {
     }
 };
 
+let rmEventsBound = false;
+
+function rmHandleChatChanged() {
+    setTimeout(() => {
+        const c = getContext();
+        if (c?.characterId) {
+            loadState(c.characterId, c.name2);
+            renderBar();
+            $('#rm-popup').remove();
+        }
+    }, 600);
+}
+
+function rmHandleMessageReceived() {
+    const s = extension_settings[EXT_NAME];
+    if (!s?.enabled || !s?.score_ai) return;
+    // Delay to ensure message is fully available (streaming support)
+    setTimeout(() => {
+        try {
+            const c = getContext();
+            if (!c?.chat?.length) return;
+            const last = c.chat[c.chat.length - 1];
+            if (!last || last.is_user) return;
+
+            const mesText = last.mes || '';
+            console.log('💕 [RM] MESSAGE_RECEIVED, text length:', mesText.length,
+                'has rel-tracker:', mesText.includes('rel-tracker'));
+
+            const hasTracker = processRelTrackerDiv(mesText);
+            if (!hasTracker) {
+                const change = calculateScoreFallback(mesText);
+                if (change !== 0) {
+                    applyNpcScore(state.charName, change, 'ai', 'Legacy Keyword Match');
+                }
+            }
+        } catch (err) {
+            console.error('💕 [RM] Error in MESSAGE_RECEIVED handler:', err);
+        }
+    }, 1500);
+}
+
+function rmHandleUserMessage() {
+    const s = extension_settings[EXT_NAME];
+    if (!s?.enabled || !s?.score_user) return;
+    const c = getContext();
+    if (!c?.chat?.length) return;
+    const last = [...c.chat].reverse().find(m => m.is_user);
+    if (!last) return;
+
+    const change = calculateScoreFallback(last.mes || '');
+    if (change !== 0) {
+        applyNpcScore(state.charName, change, 'user', 'Legacy Keyword Match');
+    }
+}
+
+let rmRenderInterval = null;
+
+window.rmBindEvents = function () {
+    if (rmEventsBound) return;
+    eventSource.on(event_types.CHAT_CHANGED, rmHandleChatChanged);
+    eventSource.on(event_types.MESSAGE_RECEIVED, rmHandleMessageReceived);
+    eventSource.on(event_types.USER_MESSAGE_RENDERED, rmHandleUserMessage);
+    rmRenderInterval = setInterval(() => {
+        const s = extension_settings[EXT_NAME];
+        if (s?.enabled && s?.bar_visible) renderBar();
+    }, 5000);
+    rmEventsBound = true;
+    console.log('💕 [RM] Events Bound');
+};
+
+window.rmUnbindEvents = function () {
+    if (!rmEventsBound) return;
+    eventSource.removeListener(event_types.CHAT_CHANGED, rmHandleChatChanged);
+    eventSource.removeListener(event_types.MESSAGE_RECEIVED, rmHandleMessageReceived);
+    eventSource.removeListener(event_types.USER_MESSAGE_RENDERED, rmHandleUserMessage);
+    if (rmRenderInterval) clearInterval(rmRenderInterval);
+    rmEventsBound = false;
+    $('#rm-float-btn, #rm-bar, #rm-popup, #rm-overlay').remove();
+    console.log('💕 [RM] Events Unbound / Extension Disabled');
+};
+
 // ============================================================
 // 🚀 INIT
 // ============================================================
 jQuery(async () => {
-    loadSettings();
+    createSettingsUI();
     loadConfetti();
-    mountFloatButton();
 
-    const ctx = getContext();
-    if (ctx?.characterId) {
-        loadState(ctx.characterId, ctx.name2);
-    }
-    renderBar();
-
-    eventSource.on(event_types.CHAT_CHANGED, () => {
-        setTimeout(() => {
-            const c = getContext();
-            if (c?.characterId) {
-                loadState(c.characterId, c.name2);
-                renderBar();
-                $('#rm-popup').remove();
-            }
-        }, 600);
-    });
-
-    eventSource.on(event_types.MESSAGE_RECEIVED, () => {
-        const s = extension_settings[EXT_NAME];
-        if (!s?.enabled || !s?.score_ai) return;
-        // Delay to ensure message is fully available (streaming support)
-        setTimeout(() => {
-            try {
-                const c = getContext();
-                if (!c?.chat?.length) return;
-                const last = c.chat[c.chat.length - 1];
-                if (!last || last.is_user) return;
-
-                const mesText = last.mes || '';
-                console.log('💕 [RM] MESSAGE_RECEIVED, text length:', mesText.length,
-                    'has rel-tracker:', mesText.includes('rel-tracker'));
-
-                const hasTracker = processRelTrackerDiv(mesText);
-                if (!hasTracker) {
-                    const change = calculateScoreFallback(mesText);
-                    if (change !== 0) {
-                        applyNpcScore(state.charName, change, 'ai', 'Legacy Keyword Match');
-                    }
-                }
-            } catch (err) {
-                console.error('💕 [RM] Error in MESSAGE_RECEIVED handler:', err);
-            }
-        }, 1500);
-    });
-
-    eventSource.on(event_types.USER_MESSAGE_RENDERED, () => {
-        const s = extension_settings[EXT_NAME];
-        if (!s?.enabled || !s?.score_user) return;
-        const c = getContext();
-        if (!c?.chat?.length) return;
-        const last = [...c.chat].reverse().find(m => m.is_user);
-        if (!last) return;
-
-        const change = calculateScoreFallback(last.mes || '');
-        if (change !== 0) {
-            applyNpcScore(state.charName, change, 'user', 'Legacy Keyword Match');
+    if (extension_settings[EXT_NAME]?.enabled !== false) {
+        mountFloatButton();
+        const ctx = getContext();
+        if (ctx?.characterId) {
+            loadState(ctx.characterId, ctx.name2);
         }
-    });
-
-    setInterval(() => {
-        const s = extension_settings[EXT_NAME];
-        if (s?.enabled && s?.bar_visible) renderBar();
-    }, 5000);
+        renderBar();
+        window.rmBindEvents();
+    }
 
     console.log('💕 Relationship Meter Multi-NPC 10k loaded!');
 });
