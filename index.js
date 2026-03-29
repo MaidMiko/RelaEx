@@ -282,23 +282,53 @@ function renderBar() {
         </div>`;
     }).join("");
 
-    const html = `
+    let $bar = $('#rm-bar');
+    if (!$bar.length) {
+        const barPos = s.bar_pos || { top: '10px', left: '50%', tx: '-50%' };
+        $('body').append(`
 <div id="rm-bar" style="
-    position:fixed; top:10px; left:50%; transform:translateX(-50%);
-    z-index:99999; width:380px; max-width:95vw; max-height:40vh; overflow-y:auto;
+    position:fixed; top:${barPos.top}; left:${barPos.left}; transform:translateX(${barPos.tx});
+    z-index:99999; width:380px; max-width:95vw; max-height:40vh; display:flex; flex-direction:column;
     background:linear-gradient(135deg,rgba(15,5,25,0.95) 0%,rgba(35,12,55,0.95) 100%);
     border:1px solid rgba(255,255,255,0.1); border-radius:12px;
-    padding:10px 14px; pointer-events:auto;
+    padding:6px 14px 10px; pointer-events:auto;
     box-shadow:0 6px 30px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.06);
     backdrop-filter:blur(12px);
     font-family:'Segoe UI',Tahoma,sans-serif;
 ">
-    <style>#rm-bar::-webkit-scrollbar { width:4px; } #rm-bar::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.2); border-radius:4px; }</style>
-    ${htmlRows}
-</div>`;
+    <div id="rm-bar-handle" style="cursor:grab; text-align:center; padding:4px 0; margin-bottom:6px; opacity:0.5; font-size:12px; color:#fff;">⠿ สไลด์เพื่อย้ายตำแหน่ง ⠿</div>
+    <div id="rm-bar-content" style="overflow-y:auto; flex:1;"></div>
+    <style>#rm-bar-content::-webkit-scrollbar { width:4px; } #rm-bar-content::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.2); border-radius:4px; }</style>
+</div>`);
+        $bar = $('#rm-bar');
 
-    if ($('#rm-bar').length) $('#rm-bar').replaceWith(html);
-    else $('body').append(html);
+        // Drag Logic
+        let isDragging = false;
+        let startX, startY, initLeft, initTop;
+        $('#rm-bar-handle').off('mousedown touchstart').on('mousedown touchstart', function (e) {
+            isDragging = true;
+            const pts = e.touches ? e.touches[0] : e;
+            startX = pts.clientX; startY = pts.clientY;
+            const rect = $bar[0].getBoundingClientRect();
+            initLeft = rect.left; initTop = rect.top;
+            $bar.css({ transform: 'none' }); // Remove translateX(-50%) on first drag
+            $('#rm-bar-handle').css('cursor', 'grabbing');
+        });
+        $(document).off('mousemove.rmbar touchmove.rmbar').on('mousemove.rmbar touchmove.rmbar', function (e) {
+            if (!isDragging) return;
+            e.preventDefault();
+            const pts = e.touches ? e.touches[0] : e;
+            $bar.css({ left: initLeft + (pts.clientX - startX) + 'px', top: initTop + (pts.clientY - startY) + 'px' });
+        });
+        $(document).off('mouseup.rmbar touchend.rmbar').on('mouseup.rmbar touchend.rmbar', function () {
+            if (!isDragging) return;
+            isDragging = false;
+            $('#rm-bar-handle').css('cursor', 'grab');
+            extension_settings[EXT_NAME]['bar_pos'] = { top: $bar.css('top'), left: $bar.css('left'), tx: '0' };
+            saveSettingsDebounced();
+        });
+    }
+    $('#rm-bar-content').html(htmlRows);
 }
 
 // ============================================================
@@ -412,13 +442,14 @@ function showLevelChangeOverlay(npcName, level, isUp) {
 function renderPopup() {
     try {
     const currentScrollLeft = $('#rm-popup .rm-npc-btn-container').length ? $('#rm-popup .rm-npc-btn-container').scrollLeft() : 0;
-    $('#rm-popup').remove(); // Always clean up first
     console.log('💕 [RM] renderPopup called, npcsData keys:', Object.keys(npcsData), 'charName:', state.charName);
     let items = Object.keys(npcsData).map(k => ({ name: k, ...npcsData[k] }));
-    if (items.length === 0) items.push({ name: state.charName || 'Unknown', points: 0, levelId: 6, lastChange: 0, history: [], avatar: '', desc: '' });
+    if (items.length === 0) items.push({ name: state.charName || 'NPC', points: 0, levelId: 6, lastChange: 0, history: [], avatar: '', desc: '' });
 
     if (!window.rmPopupSelectedNpc || !npcsData[window.rmPopupSelectedNpc]) {
-        window.rmPopupSelectedNpc = items[0].name;
+        // If the AI somehow mistakenly injected "Unknown", try selecting a real valid name first
+        const validItem = items.find(i => i.name.toLowerCase() !== 'unknown') || items[0];
+        window.rmPopupSelectedNpc = validItem.name;
     }
     
     // Make sure we have the pure base object and inject its name key
@@ -474,7 +505,7 @@ function renderPopup() {
         barText = `ต้องการอีก ${(nextLv.min - currNpc.points).toLocaleString()} pts`;
     }
 
-    const npcTabsHTML = items.length > 1 ? `<div style="display:flex; gap:6px; overflow-x:auto; padding:8px 14px; background:rgba(0,0,0,0.2); border-bottom:1px solid rgba(255,255,255,0.05); white-space:nowrap;">
+    const npcTabsHTML = items.length > 1 ? `<div class="rm-npc-btn-container" style="display:flex; gap:6px; overflow-x:auto; -webkit-overflow-scrolling:touch; padding:8px 14px; background:rgba(0,0,0,0.2); border-bottom:1px solid rgba(255,255,255,0.05); white-space:nowrap;">
             ${items.map(p => {
         const isActive = p.name === window.rmPopupSelectedNpc;
         return `<button class="rm-npc-btn" data-name="${p.name}" style="
@@ -519,7 +550,9 @@ function renderPopup() {
     const lore = currNpc.desc || 'ไม่มีประวัติ ตัวละครถูกสร้างผ่าน Tracker';
     const safeName = currNpc.name.replace(/'/g, "\\'");
 
-    $('body').append(`
+    let $popup = $('#rm-popup');
+    if (!$popup.length) {
+        $('body').append(`
 <div id="rm-popup" style="
     position:fixed;${posCss}width:315px;
     background:linear-gradient(160deg,${bg1}F8,${bg2}F8);
@@ -537,6 +570,14 @@ function renderPopup() {
         .rm-tab-btn.active { color:#FFF;border-bottom:2px solid ${level.color}!important; }
         .rm-npc-btn::-webkit-scrollbar { display:none; }
     </style>
+    <div id="rm-popup-content"></div>
+</div>`);
+        $popup = $('#rm-popup');
+    }
+    
+    $popup.css('border', `1px solid ${level.color}44`);
+
+    const innerHtml = `
     <div style="background:linear-gradient(90deg,${level.glow}99,${level.color}66);
         padding:12px 14px;display:flex;justify-content:space-between;align-items:flex-start;">
         <div style="display:flex; gap:10px; align-items:center; flex:1;">
@@ -575,8 +616,9 @@ function renderPopup() {
     <div style="padding:10px 12px;border-top:1px solid rgba(255,255,255,0.05);display:flex;gap:6px;">
         <button onclick="window.rmReset()" style="flex:1;padding:7px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:rgba(255,255,255,0.4);font-size:11px;cursor:pointer;">🔄 รีเซ็ตทั้งหมด</button>
         <button onclick="window.rmManual()" style="flex:1;padding:7px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:rgba(255,255,255,0.4);font-size:11px;cursor:pointer;">✏️ ปรับคะแนน</button>
-    </div>
-</div>`);
+    </div>`;
+    
+    $('#rm-popup-content').html(innerHtml);
 
     $(document).off('click', '.rm-tab-btn').on('click', '.rm-tab-btn', function () {
         const tab = $(this).data('tab');
@@ -603,7 +645,7 @@ function renderPopup() {
 // ============================================================
 // ⚙️ UI — SETTINGS PANEL (Extensions tab)
 // ============================================================
-async function createSettingsUI() {
+function createSettingsUI() {
     if (!extension_settings[EXT_NAME]) {
         extension_settings[EXT_NAME] = {
             enabled: true,
@@ -617,34 +659,56 @@ async function createSettingsUI() {
     }
     const s = extension_settings[EXT_NAME];
 
-    // Clean up old unused color keys
-    delete s.btn_color1; delete s.btn_color2; delete s.bg_color1; delete s.bg_color2;
-
-    const extensionUrl = import.meta.url.replace('/index.js', '');
-    let settingsHtml;
-    try {
-        settingsHtml = await $.get(`${extensionUrl}/settings.html`);
-    } catch (err) {
-        console.error('💕 [RM] Failed to load settings.html', err);
-        return;
-    }
+    // Reverting to inline string to fix PC browser loading/CORS bugs where the tab disappears
+    const settingsHtml = `
+<div id="rm_settings">
+    <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <b>💕 Relationship Meter</b>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down"></div>
+        </div>
+        <div class="inline-drawer-content">
+            <div class="flex-container" style="flex-wrap:wrap;flex-direction:column;gap:4px;">
+                <label class="checkbox_label" for="rm-s-enabled">
+                    <input id="rm-s-enabled" type="checkbox" ${s.enabled !== false ? 'checked' : ''} />
+                    <span>เปิดใช้งาน Extension</span>
+                </label>
+                <label class="checkbox_label" for="rm-s-bar">
+                    <input id="rm-s-bar" type="checkbox" ${s.bar_visible ? 'checked' : ''} />
+                    <span>แสดงแถบคะแนน (Floating Bar)</span>
+                </label>
+                <label class="checkbox_label" for="rm-s-score-ai">
+                    <input id="rm-s-score-ai" type="checkbox" ${s.score_ai !== false ? 'checked' : ''} />
+                    <span>คิดคะแนนจากข้อความ AI/NPC Tracking</span>
+                </label>
+                <label class="checkbox_label" for="rm-s-score-user">
+                    <input id="rm-s-score-user" type="checkbox" ${s.score_user !== false ? 'checked' : ''} />
+                    <span>คิดคะแนนจากข้อความ User</span>
+                </label>
+                <hr style="border-color:rgba(255,255,255,0.1);width:100%;margin:6px 0;">
+                <div style="display:flex;align-items:center;justify-content:space-between;width:100%;">
+                    <span style="font-size:12px;">🎨 สีหลัก (Primary Color)</span>
+                    <input type="color" id="rm-s-color1" value="${s.color_primary || '#7B1FA2'}" style="width:28px;height:24px;padding:0;border:none;border-radius:4px;cursor:pointer;background:none;">
+                </div>
+                <div style="display:flex;align-items:center;justify-content:space-between;width:100%;">
+                    <span style="font-size:12px;">🎨 สีรอง (Secondary Color)</span>
+                    <input type="color" id="rm-s-color2" value="${s.color_secondary || '#E91E8C'}" style="width:28px;height:24px;padding:0;border:none;border-radius:4px;cursor:pointer;background:none;">
+                </div>
+                <hr style="border-color:rgba(255,255,255,0.1);width:100%;margin:6px 0;">
+                <div class="flex" style="flex-wrap:wrap;gap:4px;">
+                    <button id="rm-btn-manual" class="menu_button" style="width:auto;">✏️ ปรับคะแนน</button>
+                    <button id="rm-btn-reset" class="menu_button" style="width:auto;">🔄 รีเซ็ตทั้งหมด</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>`;
 
     $('#rm_settings').remove();
     $('#extensions_settings2').append(settingsHtml);
 
-    // Apply saved values to the loaded HTML form
-    $('#rm-s-enabled').prop('checked', !!s.enabled);
-    $('#rm-s-bar').prop('checked', !!s.bar_visible);
-    $('#rm-s-score-ai').prop('checked', !!s.score_ai);
-    $('#rm-s-score-user').prop('checked', !!s.score_user);
-    $('#rm-s-color1').val(s.color_primary || '#7B1FA2');
-    $('#rm-s-color2').val(s.color_secondary || '#E91E8C');
-
-    // Make the standard inline drawer toggle work for our injected HTML
-    $('#extensions_settings2').off('click', '#rm_settings .inline-drawer-toggle').on('click', '#rm_settings .inline-drawer-toggle', function () {
-        $(this).next('.inline-drawer-content').stop().slideToggle(200);
-        $(this).find('.inline-drawer-icon').toggleClass('down up');
-    });
+    // Removed the custom inline-drawer toggle handler here Because SillyTavern handles it natively by default. 
+    // Double handling it caused the "auto-close" bug on Mobile.
 
     // Event bindings
     $('#rm-s-enabled').on('change', function () {
@@ -830,6 +894,23 @@ window.rmReset = function () {
     renderBar();
     $('#rm-popup').remove();
     renderPopup();
+};
+
+window.rmEditProfile = function (npcName) {
+    const npc = npcsData[npcName];
+    if (!npc) return;
+    const newAv = prompt(`[1/2] ใส่ URL รูปภาพสำหรับ ${npcName} (ปล่อยว่างถ้าไม่เปลี่ยน):`, npc.avatar || '');
+    if (newAv !== null && newAv.trim() !== '') npc.avatar = newAv.trim();
+    const newLore = prompt(`[2/2] ใส่ประวัติ/คำอธิบายสั้นๆ สำหรับ ${npcName} (ปล่อยว่างถ้าไม่เปลี่ยน):`, npc.desc || '');
+    if (newLore !== null && newLore.trim() !== '') npc.desc = newLore.trim();
+    saveState();
+    if ($('#rm-popup').length) {
+        const currentScrollLeft = $('#rm-popup .rm-npc-btn-container').length ? $('#rm-popup .rm-npc-btn-container').scrollLeft() : 0;
+        renderPopup();
+        if (currentScrollLeft > 0) {
+            setTimeout(() => $('#rm-popup .rm-npc-btn-container').scrollLeft(currentScrollLeft), 0);
+        }
+    }
 };
 
 window.rmManual = function () {
