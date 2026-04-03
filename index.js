@@ -10,6 +10,20 @@ import { extension_settings, getContext } from "../../../extensions.js";
 
 const EXT_NAME = "relationship_meter";
 
+/** Below SillyTavern #movingDivs (4000) so extension drawers / top bar stay usable */
+const RM_Z_BAR = 3970;
+const RM_Z_FLOAT = 3980;
+const RM_Z_POPUP = 3985;
+const RM_Z_MODAL = 3990;
+const RM_Z_OVERLAY = 3992;
+
+function rmEscapeHtml(s) {
+    return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function rmEscapeAttr(s) {
+    return String(s ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
 // ============================================================
 // 💎 RELATIONSHIP LEVELS — 10k Scale (13 ระดับ)
 // ============================================================
@@ -79,6 +93,37 @@ function loadState(charId, charName) {
     if (raw) {
         try {
             npcsData = JSON.parse(raw);
+            let updated = false;
+            // Migrations & Cleanups
+            for (let k of Object.keys(npcsData)) {
+                // Delete bot name if it was just an empty fallback
+                if (k === state.charName && npcsData[k].points === 0 && (!npcsData[k].history || npcsData[k].history.length === 0)) {
+                    delete npcsData[k];
+                    updated = true;
+                    continue;
+                }
+
+                let cleanK = k.replace(/\s*\([^)]*\)\s*/g, '').trim();
+                let lowerK = cleanK.toLowerCase();
+                let canonicalName = cleanK;
+                if (k !== cleanK) {
+                    for (let ex of Object.keys(npcsData)) {
+                        if (ex.toLowerCase() === lowerK && ex !== k) {
+                            canonicalName = ex;
+                            break;
+                        }
+                    }
+                    if (!npcsData[canonicalName]) {
+                        npcsData[canonicalName] = npcsData[k];
+                    } else if (Math.abs(npcsData[k].points) > Math.abs(npcsData[canonicalName].points)) {
+                        npcsData[canonicalName].points = npcsData[k].points;
+                        npcsData[canonicalName].levelId = npcsData[k].levelId;
+                    }
+                    delete npcsData[k];
+                    updated = true;
+                }
+            }
+            if (updated) saveState();
         } catch { resetStateValues(); }
     } else {
         // Migration from v1
@@ -141,26 +186,43 @@ function processRelTrackerDiv(text) {
                     if (line.startsWith('---') || line.startsWith('===')) return;
                     const parts = line.split('|').map(p => p.trim());
                     if (parts.length >= 2) {
-                        const name = parts[0];
+                        let name = parts[0];
                         if (!name || name.length === 0) return;
+                        name = name.replace(/\s*\([^)]*\)\s*/g, '').trim();
                         const cleanScore = parts[1].replace(/,/g, '').replace(/\+/g, '').trim();
                         const currentScore = parseInt(cleanScore, 10);
 
                         if (!isNaN(currentScore)) {
-                            if (!npcsData[name]) {
-                                npcsData[name] = { points: 0, levelId: 6, lastChange: 0, history: [], avatar: '', desc: '' };
+                            // Find canonical name to avoid duplicates like "vanta" vs "Vanta"
+                            const lowerName = name.toLowerCase();
+                            let canonicalName = name;
+                            for (let k of Object.keys(npcsData)) {
+                                if (k.toLowerCase() === lowerName) {
+                                    canonicalName = k;
+                                    break;
+                                }
                             }
-                            const oldPoints = npcsData[name].points;
-                            const change = currentScore - oldPoints;
-                            console.log(`💕 [RM] NPC: ${name} | old: ${oldPoints} | new: ${currentScore} | change: ${change}`);
 
-                            if (change !== 0) {
-                                applyNpcScore(name, change, 'ai', parts[4] || 'Update Tracker');
-                                anyUpdated = true;
+                            if (!npcsData[canonicalName]) {
+                                npcsData[canonicalName] = { points: 0, levelId: 6, lastChange: 0, history: [], avatar: '', desc: '' };
+                            }
+
+                            const oldPoints = npcsData[canonicalName].points;
+                            const change = currentScore - oldPoints;
+
+                            // Silent update mode for syncing history without alerts
+                            if (window.rmSilentSyncMode) {
+                                npcsData[canonicalName].points = currentScore;
+                                npcsData[canonicalName].levelId = getLevel(currentScore).id;
                             } else {
-                                // Even if change is 0, ensure points match tracker value
-                                npcsData[name].points = currentScore;
-                                npcsData[name].levelId = getLevel(currentScore).id;
+                                console.log(`💕 [RM] NPC: ${canonicalName} | old: ${oldPoints} | new: ${currentScore} | change: ${change}`);
+                                if (change !== 0) {
+                                    applyNpcScore(canonicalName, change, 'ai', parts[4] || 'Update Tracker');
+                                    anyUpdated = true;
+                                } else {
+                                    npcsData[canonicalName].points = currentScore;
+                                    npcsData[canonicalName].levelId = getLevel(currentScore).id;
+                                }
                             }
                         }
                     }
@@ -241,11 +303,8 @@ function renderBar() {
     if (!s.enabled || !s.bar_visible) { $('#rm-bar').remove(); return; }
 
     let entries = Object.keys(npcsData).map(k => ({ name: k, ...npcsData[k] }));
-    if (entries.length === 0) {
-        entries.push({ name: state.charName, points: 0, levelId: 6, lastChange: 0 });
-    }
 
-    let htmlRows = entries.map(ent => {
+    let htmlRows = entries.length === 0 ? '<div style="text-align:center;padding:8px 0;color:rgba(255,255,255,0.4);font-size:12px;">ยังไม่มีข้อมูลความสัมพันธ์</div>' : entries.map(ent => {
         const level = getLevel(ent.points);
         const nextLv = LEVELS[level.id + 1];
         let barWidth = 50;
@@ -285,11 +344,13 @@ function renderBar() {
     let $bar = $('#rm-bar');
     if (!$bar.length) {
         const barPos = s.bar_pos || { top: '10px', left: '50%', tx: '-50%' };
+        const theme1 = s.color_primary || '#7B1FA2';
+        const theme2 = s.color_secondary || '#E91E8C';
         $('body').append(`
 <div id="rm-bar" style="
     position:fixed; top:${barPos.top}; left:${barPos.left}; transform:translateX(${barPos.tx});
-    z-index:99999; width:380px; max-width:95vw; max-height:40vh; display:flex; flex-direction:column;
-    background:linear-gradient(135deg,rgba(15,5,25,0.95) 0%,rgba(35,12,55,0.95) 100%);
+    z-index:${RM_Z_BAR}; width:380px; max-width:95vw; max-height:40vh; display:flex; flex-direction:column;
+    background:linear-gradient(rgba(15,5,25,0.92), rgba(15,5,25,0.92)), linear-gradient(135deg,${theme1},${theme2});
     border:1px solid rgba(255,255,255,0.1); border-radius:12px;
     padding:6px 14px 10px; pointer-events:auto;
     box-shadow:0 6px 30px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.06);
@@ -391,7 +452,7 @@ function showLevelChangeOverlay(npcName, level, isUp) {
 
     $('body').append(`
 <div id="rm-overlay" style="
-    position:fixed;inset:0;z-index:9999999;
+    position:fixed;inset:0;z-index:${RM_Z_OVERLAY};
     background:radial-gradient(circle at center, ${level.glow}44 0%, rgba(0,0,0,0.92) 80%);
     display:flex;flex-direction:column;align-items:center;justify-content:center;
     animation:rmFadeIn 0.35s ease;
@@ -406,7 +467,8 @@ function showLevelChangeOverlay(npcName, level, isUp) {
 <div style="
     background:linear-gradient(145deg,rgba(18,6,32,0.98),rgba(40,16,65,0.98));
     border:1px solid ${level.color}55;border-radius:24px;
-    padding:44px 52px;max-width:420px;width:90%;text-align:center;
+    padding:clamp(24px, 6vw, 44px) clamp(20px, 6vw, 52px);
+    max-width:420px;width:90%;box-sizing:border-box;text-align:center;
     animation:rmPopUp 0.5s cubic-bezier(0.34,1.56,0.64,1);
     box-shadow:0 24px 80px rgba(0,0,0,0.9),0 0 60px ${level.glow}33;
     cursor:default;
@@ -441,33 +503,33 @@ function showLevelChangeOverlay(npcName, level, isUp) {
 // ============================================================
 function renderPopup() {
     try {
-    const currentScrollLeft = $('#rm-popup .rm-npc-btn-container').length ? $('#rm-popup .rm-npc-btn-container').scrollLeft() : 0;
-    console.log('💕 [RM] renderPopup called, npcsData keys:', Object.keys(npcsData), 'charName:', state.charName);
-    let items = Object.keys(npcsData).map(k => ({ name: k, ...npcsData[k] }));
-    if (items.length === 0) items.push({ name: state.charName || 'NPC', points: 0, levelId: 6, lastChange: 0, history: [], avatar: '', desc: '' });
+        const currentScrollLeft = $('#rm-popup .rm-npc-btn-container').length ? $('#rm-popup .rm-npc-btn-container').scrollLeft() : 0;
+        console.log('💕 [RM] renderPopup called, npcsData keys:', Object.keys(npcsData), 'charName:', state.charName);
+        let items = Object.keys(npcsData).map(k => ({ name: k, ...npcsData[k] }));
+        if (items.length === 0) items.push({ name: 'ไม่มีข้อมูล', points: 0, levelId: 6, lastChange: 0, history: [], avatar: '', desc: 'ระบบกำลังรอการบันทึกค่า...' });
 
-    if (!window.rmPopupSelectedNpc || !npcsData[window.rmPopupSelectedNpc]) {
-        // If the AI somehow mistakenly injected "Unknown", try selecting a real valid name first
-        const validItem = items.find(i => i.name.toLowerCase() !== 'unknown') || items[0];
-        window.rmPopupSelectedNpc = validItem.name;
-    }
-    
-    // Make sure we have the pure base object and inject its name key
-    let rawNpc = npcsData[window.rmPopupSelectedNpc];
-    let currNpc = rawNpc ? { name: window.rmPopupSelectedNpc, ...rawNpc } : items[0];
-    
-    // Ensure all required properties exist (fallback name is only a safety net)
-    currNpc = { points: 0, levelId: 6, lastChange: 0, history: [], avatar: '', desc: '', name: 'Unknown', ...currNpc };
-    const level = getLevel(currNpc.points);
+        if (!window.rmPopupSelectedNpc || !npcsData[window.rmPopupSelectedNpc]) {
+            // If the AI somehow mistakenly injected "Unknown", try selecting a real valid name first
+            const validItem = items.find(i => i.name.toLowerCase() !== 'unknown') || items[0];
+            window.rmPopupSelectedNpc = validItem.name;
+        }
 
-    const histHTML = currNpc.history && currNpc.history.length
-        ? currNpc.history.slice(0, 10).map(h => {
-            const c = h.change > 0 ? '#FF6BAE' : h.change < 0 ? '#FF6B6B' : '#888';
-            const sgn = h.change > 0 ? '+' : '';
-            const src = h.source === 'user' ? '🧑' : '🤖';
-            const mins = Math.floor((Date.now() - h.time) / 60000);
-            const t = mins < 1 ? 'เมื่อกี้' : mins < 60 ? `${mins}m` : mins < 1440 ? `${Math.floor(mins / 60)}h` : `${Math.floor(mins / 1440)}d`;
-            return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.04);">
+        // Make sure we have the pure base object and inject its name key
+        let rawNpc = npcsData[window.rmPopupSelectedNpc];
+        let currNpc = rawNpc ? { name: window.rmPopupSelectedNpc, ...rawNpc } : items[0];
+
+        // Ensure all required properties exist (fallback name is only a safety net)
+        currNpc = { points: 0, levelId: 6, lastChange: 0, history: [], avatar: '', desc: '', name: 'Unknown', ...currNpc };
+        const level = getLevel(currNpc.points);
+
+        const histHTML = currNpc.history && currNpc.history.length
+            ? currNpc.history.slice(0, 10).map(h => {
+                const c = h.change > 0 ? '#FF6BAE' : h.change < 0 ? '#FF6B6B' : '#888';
+                const sgn = h.change > 0 ? '+' : '';
+                const src = h.source === 'user' ? '🧑' : '🤖';
+                const mins = Math.floor((Date.now() - h.time) / 60000);
+                const t = mins < 1 ? 'เมื่อกี้' : mins < 60 ? `${mins}m` : mins < 1440 ? `${Math.floor(mins / 60)}h` : `${Math.floor(mins / 1440)}d`;
+                return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.04);">
                 <span style="font-size:14px;">${src}</span>
                 <div style="flex:1; display:flex; flex-direction:column;">
                     <span style="font-size:11px;color:rgba(255,255,255,0.7);">${h.reason || (h.source === 'user' ? 'การกระทำ' : 'อัปเดต')}</span>
@@ -476,12 +538,12 @@ function renderPopup() {
                 <span style="font-size:12px;font-weight:800;color:${c};">${sgn}${h.change}</span>
                 <span style="font-size:11px;color:rgba(255,255,255,0.4);font-family:monospace;min-width:44px;text-align:right;">${h.total.toLocaleString()}</span>
             </div>`;
-        }).join('')
-        : `<div style="text-align:center;padding:16px;color:rgba(255,255,255,0.25);font-size:12px;">ยังไม่มีประวัติ</div>`;
+            }).join('')
+            : `<div style="text-align:center;padding:16px;color:rgba(255,255,255,0.25);font-size:12px;">ยังไม่มีประวัติ</div>`;
 
-    const levelsHTML = LEVELS.map(l => {
-        const cur = l.id === level.id;
-        return `<div style="display:flex;align-items:center;gap:8px;padding:5px 8px;
+        const levelsHTML = LEVELS.map(l => {
+            const cur = l.id === level.id;
+            return `<div style="display:flex;align-items:center;gap:8px;padding:5px 8px;
             border-radius:7px;margin-bottom:2px;
             background:${cur ? l.color + '1A' : 'transparent'};
             border-left:2px solid ${cur ? l.color : 'transparent'};">
@@ -494,70 +556,71 @@ function renderPopup() {
             </div>
             ${cur ? `<span style="font-size:10px;font-weight:700;color:${l.color};background:${l.color}22;padding:2px 8px;border-radius:20px;">NOW</span>` : ''}
         </div>`;
-    }).join('');
+        }).join('');
 
-    const nextLv = LEVELS[level.id + 1];
-    let barW = 50, barText = "MAX ✨";
-    if (nextLv && isFinite(level.min)) {
-        const range = nextLv.min - level.min;
-        const curr = currNpc.points - level.min;
-        barW = Math.max(2, Math.min(100, (curr / range) * 100));
-        barText = `ต้องการอีก ${(nextLv.min - currNpc.points).toLocaleString()} pts`;
-    }
-
-    const npcTabsHTML = items.length > 1 ? `<div class="rm-npc-btn-container" style="display:flex; gap:6px; overflow-x:auto; -webkit-overflow-scrolling:touch; padding:8px 14px; background:rgba(0,0,0,0.2); border-bottom:1px solid rgba(255,255,255,0.05); white-space:nowrap;">
-            ${items.map(p => {
-        const isActive = p.name === window.rmPopupSelectedNpc;
-        return `<button class="rm-npc-btn" data-name="${p.name}" style="
-                    padding:5px 10px; border-radius:12px; font-size:11px; font-weight:600;
-                    background:${isActive ? level.color + '44' : 'rgba(255,255,255,0.05)'};
-                    border:1px solid ${isActive ? level.color : 'rgba(255,255,255,0.1)'};
-                    color:${isActive ? '#fff' : 'rgba(255,255,255,0.5)'}; cursor:pointer;
-                ">${p.name}</button>`;
-    }).join('')}
-        </div>` : '';
-
-    const $btn = $('#rm-float-btn');
-    let posCss = 'bottom:78px; right:18px;';
-    if ($btn.length) {
-        const rect = $btn[0].getBoundingClientRect();
-        const winW = window.innerWidth;
-        const winH = window.innerHeight;
-        const popW = 315;
-        const gap = 12;
-
-        let verticalPlacement = '';
-        if (rect.top > winH / 2) {
-            let b = winH - rect.top + gap;
-            verticalPlacement = `bottom:${b}px;`;
-        } else {
-            let t = rect.bottom + gap;
-            verticalPlacement = `top:${t}px;`;
+        const nextLv = LEVELS[level.id + 1];
+        let barW = 50, barText = "MAX ✨";
+        if (nextLv && isFinite(level.min)) {
+            const range = nextLv.min - level.min;
+            const curr = currNpc.points - level.min;
+            barW = Math.max(2, Math.min(100, (curr / range) * 100));
+            barText = `ต้องการอีก ${(nextLv.min - currNpc.points).toLocaleString()} pts`;
         }
 
-        let r = winW - rect.right;
-        if (r + popW > winW - 10) r = winW - popW - 10;
-        if (r < 10) r = 10;
+        const npcTabsHTML = items.length > 1 ? `<div class="rm-npc-btn-container" style="display:flex; gap:6px; overflow-x:auto; -webkit-overflow-scrolling:touch; padding:8px 14px; background:rgba(0,0,0,0.2); border-bottom:1px solid rgba(255,255,255,0.05); white-space:nowrap; touch-action:pan-x; overscroll-behavior-x:contain;">
+            ${items.map(p => {
+            const isActive = p.name === window.rmPopupSelectedNpc;
+            const safeAttr = rmEscapeAttr(p.name);
+            return `<button type="button" class="rm-npc-btn" data-name="${safeAttr}" style="
+                    flex-shrink:0; padding:5px 10px; border-radius:12px; font-size:11px; font-weight:600;
+                    background:${isActive ? level.color + '44' : 'rgba(255,255,255,0.05)'};
+                    border:1px solid ${isActive ? level.color : 'rgba(255,255,255,0.1)'};
+                    color:${isActive ? '#fff' : 'rgba(255,255,255,0.5)'}; cursor:pointer; touch-action:manipulation; -webkit-tap-highlight-color:rgba(255,255,255,0.12);
+                ">${rmEscapeHtml(p.name)}</button>`;
+        }).join('')}
+        </div>` : '';
 
-        posCss = `${verticalPlacement} right:${r}px;`;
-    }
+        const $btn = $('#rm-float-btn');
+        let posCss = 'bottom:78px; right:18px;';
+        if ($btn.length) {
+            const rect = $btn[0].getBoundingClientRect();
+            const winW = window.innerWidth;
+            const winH = window.innerHeight;
+            const popW = 315;
+            const gap = 12;
 
-    const s = extension_settings[EXT_NAME] || {};
-    const bg1 = '#0E051A';
-    const bg2 = '#200C34';
+            let verticalPlacement = '';
+            if (rect.top > winH / 2) {
+                let b = winH - rect.top + gap;
+                verticalPlacement = `bottom:${b}px;`;
+            } else {
+                let t = rect.bottom + gap;
+                verticalPlacement = `top:${t}px;`;
+            }
 
-    const av = currNpc.avatar || 'https://i.ibb.co/VvzYW3G/default-avatar.png';
-    const lore = currNpc.desc || 'ไม่มีประวัติ ตัวละครถูกสร้างผ่าน Tracker';
-    const safeName = currNpc.name.replace(/'/g, "\\'");
+            let r = winW - rect.right;
+            if (r + popW > winW - 10) r = winW - popW - 10;
+            if (r < 10) r = 10;
 
-    let $popup = $('#rm-popup');
-    if (!$popup.length) {
-        $('body').append(`
+            posCss = `${verticalPlacement} right:${r}px;`;
+        }
+
+        const s = extension_settings[EXT_NAME] || {};
+        const theme1 = s.color_primary || '#7B1FA2';
+        const theme2 = s.color_secondary || '#E91E8C';
+
+        const av = currNpc.avatar || 'https://i.ibb.co/VvzYW3G/default-avatar.png';
+        const lore = currNpc.desc || 'ไม่มีประวัติ ตัวละครถูกสร้างผ่าน Tracker';
+        const safeName = currNpc.name.replace(/'/g, "\\'");
+
+        let $popup = $('#rm-popup');
+        if (!$popup.length) {
+            $('body').append(`
 <div id="rm-popup" style="
-    position:fixed;${posCss}width:315px;
-    background:linear-gradient(160deg,${bg1}F8,${bg2}F8);
+    position:fixed;${posCss}width:315px;max-width:90vw;
+    background:linear-gradient(rgba(18,6,32,0.94), rgba(18,6,32,0.94)), linear-gradient(160deg,${theme1},${theme2});
     border:1px solid ${level.color}44;border-radius:18px;
-    z-index:99998;overflow:hidden;
+    z-index:${RM_Z_POPUP};overflow:hidden;
     box-shadow:0 20px 60px rgba(0,0,0,0.85);
     font-family:'Segoe UI',Tahoma,sans-serif;
     animation:rmFadeIn 0.2s ease-out;
@@ -572,12 +635,12 @@ function renderPopup() {
     </style>
     <div id="rm-popup-content"></div>
 </div>`);
-        $popup = $('#rm-popup');
-    }
-    
-    $popup.css('border', `1px solid ${level.color}44`);
+            $popup = $('#rm-popup');
+        }
 
-    const innerHtml = `
+        $popup.css('border', `1px solid ${level.color}44`);
+
+        const innerHtml = `
     <div style="background:linear-gradient(90deg,${level.glow}99,${level.color}66);
         padding:12px 14px;display:flex;justify-content:space-between;align-items:flex-start;">
         <div style="display:flex; gap:10px; align-items:center; flex:1;">
@@ -588,6 +651,7 @@ function renderPopup() {
                 <div style="display:flex; align-items:center; gap:6px;">
                     <span style="font-size:14px;font-weight:800;color:#FFF;letter-spacing:0.2px;">${currNpc.name}</span>
                     <button onclick="window.rmEditProfile('${safeName}')" style="background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.2);border-radius:4px;color:rgba(255,255,255,0.8);cursor:pointer;font-size:10px;padding:2px 6px;">⚙️ Edit</button>
+                    ${currNpc.name !== 'ไม่มีข้อมูล' ? `<button onclick="window.rmDeleteNpc('${safeName}')" style="background:rgba(255,0,0,0.15);border:1px solid rgba(255,0,0,0.3);border-radius:4px;color:#ff6b6b;cursor:pointer;font-size:10px;padding:2px 6px;margin-left:4px;">🗑️ ลบ</button>` : ''}
                 </div>
                 <div title="${lore}" style="font-size:10px;color:rgba(255,255,255,0.7);margin-top:2px;line-height:1.2;max-height:24px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;">
                     ${lore}
@@ -613,29 +677,31 @@ function renderPopup() {
     </div>
     <div id="rm-pane-history" style="padding:8px 12px;max-height:165px;overflow-y:auto;">${histHTML}</div>
     <div id="rm-pane-levels" style="padding:8px 10px;max-height:165px;overflow-y:auto;display:none;">${levelsHTML}</div>
-    <div style="padding:10px 12px;border-top:1px solid rgba(255,255,255,0.05);display:flex;gap:6px;">
-        <button onclick="window.rmReset()" style="flex:1;padding:7px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:rgba(255,255,255,0.4);font-size:11px;cursor:pointer;">🔄 รีเซ็ตทั้งหมด</button>
-        <button onclick="window.rmManual()" style="flex:1;padding:7px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:rgba(255,255,255,0.4);font-size:11px;cursor:pointer;">✏️ ปรับคะแนน</button>
-    </div>`;
-    
-    $('#rm-popup-content').html(innerHtml);
+    <div style="height:12px;"></div>`;
 
-    $(document).off('click', '.rm-tab-btn').on('click', '.rm-tab-btn', function () {
-        const tab = $(this).data('tab');
-        $('.rm-tab-btn').removeClass('active').css('border-bottom', '2px solid transparent');
-        $(this).addClass('active').css('border-bottom', `2px solid ${level.color}`);
-        $('[id^="rm-pane-"]').hide();
-        $(`#rm-pane-${tab}`).show();
-    });
+        $('#rm-popup-content').html(innerHtml);
 
-    $(document).off('click', '.rm-npc-btn').on('click', '.rm-npc-btn', function () {
-        window.rmPopupSelectedNpc = $(this).data('name');
-        renderPopup();
-    });
+        const $pop = $('#rm-popup');
+        $pop.off('click.rmTab', '.rm-tab-btn').on('click.rmTab', '.rm-tab-btn', function () {
+            const tab = $(this).data('tab');
+            $('.rm-tab-btn').removeClass('active').css('border-bottom', '2px solid transparent');
+            $(this).addClass('active').css('border-bottom', `2px solid ${level.color}`);
+            $('[id^="rm-pane-"]').hide();
+            $(`#rm-pane-${tab}`).show();
+        });
 
-    if (currentScrollLeft > 0) {
-        setTimeout(() => $('#rm-popup .rm-npc-btn-container').scrollLeft(currentScrollLeft), 0);
-    }
+        $pop.off('pointerup.rmNpc', '.rm-npc-btn').on('pointerup.rmNpc', '.rm-npc-btn', function (e) {
+            if (e.pointerType === 'mouse' && e.button !== 0) return;
+            e.stopPropagation();
+            const name = $(this).attr('data-name');
+            if (!name || name === window.rmPopupSelectedNpc) return;
+            window.rmPopupSelectedNpc = name;
+            renderPopup();
+        });
+
+        if (currentScrollLeft > 0) {
+            setTimeout(() => $('#rm-popup .rm-npc-btn-container').scrollLeft(currentScrollLeft), 0);
+        }
 
     } catch (err) {
         console.error('💕 [RM] Error in renderPopup:', err);
@@ -704,8 +770,10 @@ function createSettingsUI() {
     </div>
 </div>`;
 
-    $('#rm_settings').remove();
-    $('#extensions_settings2').append(settingsHtml);
+    $('#relaex_extension_slot').remove();
+    const $relaSlot = $('<div id="relaex_extension_slot" class="extension_container"></div>');
+    $('#extensions_settings2').prepend($relaSlot);
+    $relaSlot.html(settingsHtml);
 
     // Removed the custom inline-drawer toggle handler here Because SillyTavern handles it natively by default. 
     // Double handling it caused the "auto-close" bug on Mobile.
@@ -750,7 +818,7 @@ function mountFloatButton() {
     $('body').append(`
 <button id="rm-float-btn" title="Relationship Meter" style="
     position:fixed;bottom:18px;right:18px;width:48px;height:48px;
-    border-radius:50%;border:none;cursor:pointer;z-index:99997;
+    border-radius:50%;border:none;cursor:pointer;z-index:${RM_Z_FLOAT};
     background:linear-gradient(135deg,${c1},${c2});
     box-shadow:0 4px 18px ${c2}70;
     font-size:20px;display:flex;align-items:center;justify-content:center;
@@ -896,21 +964,15 @@ window.rmReset = function () {
     renderPopup();
 };
 
-window.rmEditProfile = function (npcName) {
-    const npc = npcsData[npcName];
-    if (!npc) return;
-    const newAv = prompt(`[1/2] ใส่ URL รูปภาพสำหรับ ${npcName} (ปล่อยว่างถ้าไม่เปลี่ยน):`, npc.avatar || '');
-    if (newAv !== null && newAv.trim() !== '') npc.avatar = newAv.trim();
-    const newLore = prompt(`[2/2] ใส่ประวัติ/คำอธิบายสั้นๆ สำหรับ ${npcName} (ปล่อยว่างถ้าไม่เปลี่ยน):`, npc.desc || '');
-    if (newLore !== null && newLore.trim() !== '') npc.desc = newLore.trim();
+window.rmDeleteNpc = function (npcName) {
+    if (!confirm(`คุณต้องการลบข้อมูลของ ${npcName} ใช่หรือไม่?`)) return;
+    delete npcsData[npcName];
     saveState();
+    window.rmPopupSelectedNpc = null;
     if ($('#rm-popup').length) {
-        const currentScrollLeft = $('#rm-popup .rm-npc-btn-container').length ? $('#rm-popup .rm-npc-btn-container').scrollLeft() : 0;
         renderPopup();
-        if (currentScrollLeft > 0) {
-            setTimeout(() => $('#rm-popup .rm-npc-btn-container').scrollLeft(currentScrollLeft), 0);
-        }
     }
+    renderBar();
 };
 
 window.rmManual = function () {
@@ -947,19 +1009,54 @@ window.rmManual = function () {
 };
 
 window.rmEditProfile = function (name) {
-    if (!npcsData[name]) return;
-    const newAvatar = prompt(`[1/2] ระบุ URL รูปภาพ (API Link) สำหรับ ${name}\n(ทิ้งว่างไว้เพื่อใช้รูปเดิม):`, npcsData[name].avatar || '');
-    if (newAvatar !== null) {
-        if (newAvatar.trim() !== '') npcsData[name].avatar = newAvatar.trim();
-        else if (newAvatar === '') delete npcsData[name].avatar;
+    const npc = npcsData[name];
+    if (!npc) return;
+    $('#rm-profile-modal').remove();
 
-        const newDesc = prompt(`[2/2] ระบุคำอธิบาย/ประวัติสั้นๆ สำหรับ ${name}:`, npcsData[name].desc || '');
-        if (newDesc !== null) npcsData[name].desc = newDesc.trim();
+    const head = rmEscapeHtml(name);
+    $('body').append(`
+<div id="rm-profile-modal" style="position:fixed;inset:0;z-index:${RM_Z_MODAL};background:rgba(0,0,0,0.62);display:flex;align-items:center;justify-content:center;padding:max(16px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(16px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));box-sizing:border-box;font-family:'Segoe UI',Tahoma,sans-serif;">
+    <div style="background:linear-gradient(145deg,rgba(18,6,32,0.98),rgba(40,16,65,0.98));border:1px solid rgba(255,255,255,0.14);border-radius:16px;max-width:420px;width:100%;padding:18px;box-shadow:0 20px 60px rgba(0,0,0,0.85);">
+        <div style="font-size:15px;font-weight:700;color:#fff;margin-bottom:12px;">แก้โปรไฟล์: ${head}</div>
+        <label style="display:block;font-size:11px;color:rgba(255,255,255,0.5);margin-bottom:4px;">URL รูปภาพ (เว้นว่างแล้วกดบันทึก = ลบ URL ใช้รูปเริ่มต้น)</label>
+        <input id="rm-modal-avatar" type="text" class="text_pole" style="width:100%;box-sizing:border-box;margin-bottom:12px;" placeholder="https://..." autocomplete="off" />
+        <label style="display:block;font-size:11px;color:rgba(255,255,255,0.5);margin-bottom:4px;">คำอธิบาย / ประวัติสั้น</label>
+        <textarea id="rm-modal-desc" class="text_pole" style="width:100%;box-sizing:border-box;min-height:72px;resize:vertical;margin-bottom:14px;"></textarea>
+        <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;align-items:center;">
+            <button type="button" id="rm-modal-clear-av" class="menu_button" style="margin-right:auto;">ล้าง URL รูป</button>
+            <button type="button" id="rm-modal-cancel" class="menu_button">ยกเลิก</button>
+            <button type="button" id="rm-modal-save" class="menu_button">บันทึก</button>
+        </div>
+    </div>
+</div>`);
 
+    $('#rm-modal-avatar').val(npc.avatar || '');
+    $('#rm-modal-desc').val(npc.desc || '');
+
+    const closeModal = () => { $('#rm-profile-modal').remove(); };
+
+    $('#rm-profile-modal').on('click.rmProf', function (e) {
+        if (e.target.id === 'rm-profile-modal') closeModal();
+    });
+
+    $('#rm-modal-cancel').on('click.rmProf', closeModal);
+    $('#rm-modal-clear-av').on('click.rmProf', () => { $('#rm-modal-avatar').val(''); });
+
+    $('#rm-modal-save').on('click.rmProf', () => {
+        const vAv = $('#rm-modal-avatar').val().trim();
+        const vDesc = $('#rm-modal-desc').val().trim();
+        if (vAv) npcsData[name].avatar = vAv;
+        else delete npcsData[name].avatar;
+        npcsData[name].desc = vDesc;
         saveState();
-        $('#rm-popup').remove();
-        renderPopup();
-    }
+        closeModal();
+        if ($('#rm-popup').length) {
+            const sc = $('#rm-popup .rm-npc-btn-container').length ? $('#rm-popup .rm-npc-btn-container').scrollLeft() : 0;
+            renderPopup();
+            if (sc > 0) setTimeout(() => $('#rm-popup .rm-npc-btn-container').scrollLeft(sc), 0);
+        }
+        renderBar();
+    });
 };
 
 let rmEventsBound = false;
@@ -969,6 +1066,24 @@ function rmHandleChatChanged() {
         const c = getContext();
         if (c?.characterId) {
             loadState(c.characterId, c.name2);
+
+            // Sync with Chat History (for cross-device synchronization and enforcing Lore values)
+            if (c.chat && c.chat.length > 0) {
+                // Find LATEST AI message with a tracker div
+                const aiMsgs = [...c.chat].filter(m => !m.is_user && m.mes && m.mes.includes('rel-tracker'));
+                if (aiMsgs.length > 0) {
+                    const latestMsg = aiMsgs[aiMsgs.length - 1];
+                    try {
+                        window.rmSilentSyncMode = true; // Prevent popup alerts during background sync
+                        processRelTrackerDiv(latestMsg.mes);
+                        window.rmSilentSyncMode = false;
+                        saveState(); // Ensure updated lore values are saved
+                    } catch (e) {
+                        window.rmSilentSyncMode = false;
+                    }
+                }
+            }
+
             renderBar();
             $('#rm-popup').remove();
         }
@@ -991,11 +1106,15 @@ function rmHandleMessageReceived() {
                 'has rel-tracker:', mesText.includes('rel-tracker'));
 
             const hasTracker = processRelTrackerDiv(mesText);
-            if (!hasTracker) {
-                const change = calculateScoreFallback(mesText);
-                if (change !== 0) {
-                    applyNpcScore(state.charName, change, 'ai', 'Legacy Keyword Match');
-                }
+
+            // By user request: "ค่ามาจากลอร์เท่านั้น" (Values must come from Lore ONLY).
+            // We disable calculateScoreFallback entirely if there is a tracking div or strictly rely on AI outputs.
+            // Keeping the fallback logic minimal or off if LORE tracking is the primary source.
+            if (!hasTracker && !s?.score_ai_strict) {
+                // If you want to force lore only, you might skip this completely
+                // But for backwards compability, we'll keep it unless we want to strip it.
+                // Reqiurement: "ดึงค่าจาก ลอร์บุ้ค ... ค่ามาจากลอร์เท่านั้น"
+                // Let's rely ONLY on the rel-tracker div! So we do nothing if not found!
             }
         } catch (err) {
             console.error('💕 [RM] Error in MESSAGE_RECEIVED handler:', err);
@@ -1005,16 +1124,9 @@ function rmHandleMessageReceived() {
 
 function rmHandleUserMessage() {
     const s = extension_settings[EXT_NAME];
-    if (!s?.enabled || !s?.score_user) return;
-    const c = getContext();
-    if (!c?.chat?.length) return;
-    const last = [...c.chat].reverse().find(m => m.is_user);
-    if (!last) return;
-
-    const change = calculateScoreFallback(last.mes || '');
-    if (change !== 0) {
-        applyNpcScore(state.charName, change, 'user', 'Legacy Keyword Match');
-    }
+    // Disabled fallback score evaluation from User text to enforce "Lore Only" points
+    // if (!s?.enabled || !s?.score_user) return;
+    // const c = getContext(); ...
 }
 
 let rmRenderInterval = null;
