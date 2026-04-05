@@ -432,7 +432,8 @@ function fireConfetti(isUp, levelColor) {
 }
 
 function showLevelChangeOverlay(npcName, level, isUp) {
-    $('#rm-overlay').remove();
+    $('#rm-overlay-backdrop, #rm-overlay-box').remove();
+    $(document).off('.rmOverlay');
     loadConfetti();
     setTimeout(() => fireConfetti(isUp, level.color), 400);
 
@@ -442,37 +443,46 @@ function showLevelChangeOverlay(npcName, level, isUp) {
         ? `${npcName} มีความรู้สึกที่ดีขึ้นต่อคุณ`
         : `${npcName} ดูเย็นชาลงกว่าเดิม...`;
 
-    // Dismiss function — accessible globally as safeguard
+    // Dismiss function
     window.rmDismissOverlay = function () {
-        const $ov = $('#rm-overlay');
-        if ($ov.length) {
-            $ov.fadeOut(220, function () { $(this).remove(); });
-        }
+        $('#rm-overlay-backdrop, #rm-overlay-box').fadeOut(220, function () { $(this).remove(); });
+        $(document).off('.rmOverlay');
     };
 
+    // --- Backdrop ---
+    $('body').append(`<div id="rm-overlay-backdrop" style="
+        position:fixed;top:0;left:0;right:0;bottom:0;z-index:${RM_Z_OVERLAY};
+        background:radial-gradient(circle at center, ${level.glow}44 0%, rgba(0,0,0,0.92) 80%);
+        animation:rmFadeIn 0.35s ease; cursor:pointer;
+    "></div>`);
+
+    // --- Overlay Box (position:fixed, direct child of body) ---
+    const winW = window.innerWidth;
+    const winH = window.innerHeight;
+    const boxW = Math.min(420, winW - 32);
+    const initLeft = Math.max(16, (winW - boxW) / 2);
+    const initTop = Math.max(16, winH * 0.25);
+
     $('body').append(`
-<div id="rm-overlay" style="
-    position:fixed;inset:0;z-index:${RM_Z_OVERLAY};
-    background:radial-gradient(circle at center, ${level.glow}44 0%, rgba(0,0,0,0.92) 80%);
-    display:flex;flex-direction:column;align-items:center;justify-content:center;
-    animation:rmFadeIn 0.35s ease;
-    font-family:'Segoe UI',Tahoma,sans-serif;
-    cursor:pointer;
-">
 <style>
     @keyframes rmFadeIn  { from{opacity:0} to{opacity:1} }
     @keyframes rmPopUp   { from{opacity:0;transform:scale(0.85) translateY(20px)} to{opacity:1;transform:scale(1) translateY(0)} }
     @keyframes rmPulse   { 0%,100%{filter:drop-shadow(0 0 12px ${level.color})} 50%{filter:drop-shadow(0 0 30px ${level.color})} }
 </style>
-<div style="
+<div id="rm-overlay-box" style="
+    position:fixed; top:${initTop}px; left:${initLeft}px; width:${boxW}px;
+    z-index:${RM_Z_OVERLAY + 1};
     background:linear-gradient(145deg,rgba(18,6,32,0.98),rgba(40,16,65,0.98));
-    border:1px solid ${level.color}55;border-radius:24px;
-    padding:clamp(24px, 6vw, 44px) clamp(20px, 6vw, 52px);
-    max-width:420px;width:90%;box-sizing:border-box;text-align:center;
+    border:1px solid ${level.color}55; border-radius:24px;
+    padding:clamp(20px, 5vw, 40px) clamp(16px, 5vw, 44px);
+    box-sizing:border-box; text-align:center;
     animation:rmPopUp 0.5s cubic-bezier(0.34,1.56,0.64,1);
     box-shadow:0 24px 80px rgba(0,0,0,0.9),0 0 60px ${level.glow}33;
-    cursor:default;
-" onclick="event.stopPropagation()">
+    font-family:'Segoe UI',Tahoma,sans-serif;
+    max-height:${winH * 0.5}px; overflow-y:auto;
+    touch-action:none;
+">
+    <div id="rm-overlay-drag" style="cursor:grab;user-select:none;opacity:0.4;font-size:11px;margin-bottom:8px;">⠿ สไลด์เพื่อย้าย ⠿</div>
     <div style="font-size:64px;margin-bottom:16px;animation:rmPulse 2s ease-in-out infinite;">${icon}</div>
     <div style="font-size:11px;letter-spacing:4px;text-transform:uppercase;color:rgba(255,255,255,0.4);margin-bottom:10px;">${title}</div>
     <div style="font-size:30px;font-weight:900;color:${level.color};text-shadow:0 0 25px ${level.glow}cc;margin-bottom:4px;">${level.name}</div>
@@ -488,11 +498,43 @@ function showLevelChangeOverlay(npcName, level, isUp) {
         padding:11px 40px;font-size:14px;font-weight:700;cursor:pointer;
         box-shadow:0 6px 20px ${level.color}55;
     ">✓ รับทราบ</button>
-</div>
 </div>`);
 
-    // Click on dark background to dismiss
-    $('#rm-overlay').on('click', function () { window.rmDismissOverlay(); });
+    // Click backdrop to dismiss
+    $('#rm-overlay-backdrop').on('click.rmOverlay', function () { window.rmDismissOverlay(); });
+
+    // --- Drag logic ---
+    let isDragging = false, dragStartX = 0, dragStartY = 0, elemStartLeft = 0, elemStartTop = 0;
+    const $box = $('#rm-overlay-box');
+
+    $('#rm-overlay-drag').on('mousedown.rmOverlay touchstart.rmOverlay', function (e) {
+        isDragging = true;
+        const pts = e.type.includes('touch') ? e.originalEvent.touches[0] : e;
+        dragStartX = pts.clientX;
+        dragStartY = pts.clientY;
+        elemStartLeft = parseFloat($box.css('left'));
+        elemStartTop = parseFloat($box.css('top'));
+        $(this).css('cursor', 'grabbing');
+        e.preventDefault();
+    });
+
+    $(document).on('mousemove.rmOverlay touchmove.rmOverlay', function (e) {
+        if (!isDragging) return;
+        e.preventDefault();
+        const pts = e.type.includes('touch') ? e.originalEvent.touches[0] : e;
+        const dx = pts.clientX - dragStartX;
+        const dy = pts.clientY - dragStartY;
+        $box.css({
+            left: Math.max(0, Math.min(elemStartLeft + dx, window.innerWidth - 60)) + 'px',
+            top: Math.max(0, Math.min(elemStartTop + dy, window.innerHeight - 60)) + 'px'
+        });
+    });
+
+    $(document).on('mouseup.rmOverlay touchend.rmOverlay', function () {
+        if (!isDragging) return;
+        isDragging = false;
+        $('#rm-overlay-drag').css('cursor', 'grab');
+    });
 
     // Auto-dismiss after 8 seconds as safety net
     setTimeout(() => { window.rmDismissOverlay(); }, 8000);
@@ -581,28 +623,30 @@ function renderPopup() {
         </div>` : '';
 
         const $btn = $('#rm-float-btn');
-        let posCss = 'bottom:78px; right:18px;';
+        let posCss = 'bottom:78px; right:18px; top:auto; left:auto;';
         if ($btn.length) {
             const rect = $btn[0].getBoundingClientRect();
             const winW = window.innerWidth;
             const winH = window.innerHeight;
             const popW = 315;
+            const popH = 430; // estimated max height
             const gap = 12;
 
-            let verticalPlacement = '';
+            let nTop = 0;
             if (rect.top > winH / 2) {
                 let b = winH - rect.top + gap;
-                verticalPlacement = `bottom:${b}px;`;
+                nTop = winH - b - popH;
             } else {
-                let t = rect.bottom + gap;
-                verticalPlacement = `top:${t}px;`;
+                nTop = rect.bottom + gap;
             }
+            if (nTop < 10) nTop = 10;
 
             let r = winW - rect.right;
             if (r + popW > winW - 10) r = winW - popW - 10;
             if (r < 10) r = 10;
+            let nLeft = winW - r - popW;
 
-            posCss = `${verticalPlacement} right:${r}px;`;
+            posCss = `top:${nTop}px; left:${nLeft}px; bottom:auto; right:auto;`;
         }
 
         const s = extension_settings[EXT_NAME] || {};
@@ -617,7 +661,7 @@ function renderPopup() {
         if (!$popup.length) {
             $('body').append(`
 <div id="rm-popup" style="
-    position:fixed;${posCss}width:315px;max-width:90vw;
+    position:fixed;${posCss}width:315px;max-width:90vw;max-height:85vh;display:flex;flex-direction:column;
     background:linear-gradient(rgba(18,6,32,0.94), rgba(18,6,32,0.94)), linear-gradient(160deg,${theme1},${theme2});
     border:1px solid ${level.color}44;border-radius:18px;
     z-index:${RM_Z_POPUP};overflow:hidden;
@@ -633,16 +677,41 @@ function renderPopup() {
         .rm-tab-btn.active { color:#FFF;border-bottom:2px solid ${level.color}!important; }
         .rm-npc-btn::-webkit-scrollbar { display:none; }
     </style>
-    <div id="rm-popup-content"></div>
+    <div id="rm-popup-content" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;"></div>
 </div>`);
             $popup = $('#rm-popup');
+
+            // --- Enable Dragging on the Popup ---
+            let isDraggingPopup = false;
+            let popStartX, popStartY, popInitLeft, popInitTop;
+            $popup.on('mousedown touchstart', '.rm-popup-header', function (e) {
+                if ($(e.target).closest('button').length) return; // ignore if clicking buttons
+                isDraggingPopup = true;
+                const pts = e.touches ? e.touches[0] : e;
+                popStartX = pts.clientX; popStartY = pts.clientY;
+                const rect = $popup[0].getBoundingClientRect();
+                popInitLeft = rect.left; popInitTop = rect.top;
+                $popup.css({ right: 'auto', bottom: 'auto', left: popInitLeft + 'px', top: popInitTop + 'px', margin: 0, transform: 'none' });
+                $(this).css('cursor', 'grabbing');
+            });
+            $(document).on('mousemove.rmPopup touchmove.rmPopup', function (e) {
+                if (!isDraggingPopup) return;
+                e.preventDefault();
+                const pts = e.touches ? e.touches[0] : e;
+                $popup.css({ left: popInitLeft + (pts.clientX - popStartX) + 'px', top: popInitTop + (pts.clientY - popStartY) + 'px' });
+            });
+            $(document).on('mouseup.rmPopup touchend.rmPopup', function () {
+                if (!isDraggingPopup) return;
+                isDraggingPopup = false;
+                $('.rm-popup-header').css('cursor', 'grab');
+            });
         }
 
         $popup.css('border', `1px solid ${level.color}44`);
 
         const innerHtml = `
-    <div style="background:linear-gradient(90deg,${level.glow}99,${level.color}66);
-        padding:12px 14px;display:flex;justify-content:space-between;align-items:flex-start;">
+    <div class="rm-popup-header" style="background:linear-gradient(90deg,${level.glow}99,${level.color}66);
+        padding:12px 14px;display:flex;justify-content:space-between;align-items:flex-start;cursor:grab;">
         <div style="display:flex; gap:10px; align-items:center; flex:1;">
             <div style="width:40px;height:40px;border-radius:50%;background:rgba(0,0,0,0.3);overflow:hidden;border:2px solid rgba(255,255,255,0.2);flex-shrink:0;">
                 <img src="${av}" style="width:100%;height:100%;object-fit:cover;" onerror="this.src='https://i.ibb.co/VvzYW3G/default-avatar.png'">
@@ -1011,38 +1080,95 @@ window.rmManual = function () {
 window.rmEditProfile = function (name) {
     const npc = npcsData[name];
     if (!npc) return;
-    $('#rm-profile-modal').remove();
+    $('#rm-profile-backdrop, #rm-profile-box').remove();
+    $(document).off('.rmModal');
 
     const head = rmEscapeHtml(name);
+
+    // --- Backdrop (click to close) ---
+    $('body').append(`<div id="rm-profile-backdrop" style="position:fixed;top:0;left:0;right:0;bottom:0;z-index:${RM_Z_MODAL};background:rgba(0,0,0,0.62);"></div>`);
+
+    // --- Modal Box (position:fixed, direct child of body → viewport coords match perfectly) ---
+    const winW = window.innerWidth;
+    const winH = window.innerHeight;
+    const boxW = Math.min(420, winW - 32);
+    const initLeft = Math.max(16, (winW - boxW) / 2);
+    const initTop = Math.max(16, winH * 0.25);
+
     $('body').append(`
-<div id="rm-profile-modal" style="position:fixed;inset:0;z-index:${RM_Z_MODAL};background:rgba(0,0,0,0.62);display:flex;align-items:center;justify-content:center;padding:max(16px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(16px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));box-sizing:border-box;font-family:'Segoe UI',Tahoma,sans-serif;">
-    <div style="background:linear-gradient(145deg,rgba(18,6,32,0.98),rgba(40,16,65,0.98));border:1px solid rgba(255,255,255,0.14);border-radius:16px;max-width:420px;width:100%;padding:18px;box-shadow:0 20px 60px rgba(0,0,0,0.85);">
-        <div style="font-size:15px;font-weight:700;color:#fff;margin-bottom:12px;">แก้โปรไฟล์: ${head}</div>
-        <label style="display:block;font-size:11px;color:rgba(255,255,255,0.5);margin-bottom:4px;">URL รูปภาพ (เว้นว่างแล้วกดบันทึก = ลบ URL ใช้รูปเริ่มต้น)</label>
-        <input id="rm-modal-avatar" type="text" class="text_pole" style="width:100%;box-sizing:border-box;margin-bottom:12px;" placeholder="https://..." autocomplete="off" />
-        <label style="display:block;font-size:11px;color:rgba(255,255,255,0.5);margin-bottom:4px;">คำอธิบาย / ประวัติสั้น</label>
-        <textarea id="rm-modal-desc" class="text_pole" style="width:100%;box-sizing:border-box;min-height:72px;resize:vertical;margin-bottom:14px;"></textarea>
-        <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;align-items:center;">
-            <button type="button" id="rm-modal-clear-av" class="menu_button" style="margin-right:auto;">ล้าง URL รูป</button>
-            <button type="button" id="rm-modal-cancel" class="menu_button">ยกเลิก</button>
-            <button type="button" id="rm-modal-save" class="menu_button">บันทึก</button>
-        </div>
+<div id="rm-profile-box" style="
+    position:fixed; top:${initTop}px; left:${initLeft}px; width:${boxW}px;
+    z-index:${RM_Z_MODAL + 1};
+    background:linear-gradient(145deg,rgba(18,6,32,0.98),rgba(40,16,65,0.98));
+    border:1px solid rgba(255,255,255,0.14); border-radius:16px;
+    padding:18px; box-shadow:0 20px 60px rgba(0,0,0,0.85);
+    font-family:'Segoe UI',Tahoma,sans-serif;
+    max-height:${winH * 0.5}px; overflow-y:auto;
+    touch-action:none;
+">
+    <div id="rm-modal-drag-handle" style="font-size:15px;font-weight:700;color:#fff;margin-bottom:12px;cursor:grab;user-select:none;display:flex;align-items:center;gap:6px;">
+        <span style="opacity:0.4;font-size:12px;">⠿</span> แก้โปรไฟล์: ${head}
+    </div>
+    <label style="display:block;font-size:11px;color:rgba(255,255,255,0.5);margin-bottom:4px;">URL รูปภาพ (เว้นว่างแล้วกดบันทึก = ลบ URL ใช้รูปเริ่มต้น)</label>
+    <input id="rm-modal-avatar" type="text" class="text_pole" style="width:100%;box-sizing:border-box;margin-bottom:12px;" placeholder="https://..." autocomplete="off" />
+    <label style="display:block;font-size:11px;color:rgba(255,255,255,0.5);margin-bottom:4px;">คำอธิบาย / ประวัติสั้น</label>
+    <textarea id="rm-modal-desc" class="text_pole" style="width:100%;box-sizing:border-box;min-height:72px;resize:vertical;margin-bottom:14px;"></textarea>
+    <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;align-items:center;">
+        <button type="button" id="rm-modal-clear-av" class="menu_button" style="margin-right:auto;">ล้าง URL รูป</button>
+        <button type="button" id="rm-modal-cancel" class="menu_button">ยกเลิก</button>
+        <button type="button" id="rm-modal-save" class="menu_button">บันทึก</button>
     </div>
 </div>`);
 
     $('#rm-modal-avatar').val(npc.avatar || '');
     $('#rm-modal-desc').val(npc.desc || '');
 
-    const closeModal = () => { $('#rm-profile-modal').remove(); };
+    const closeModal = () => {
+        $('#rm-profile-backdrop, #rm-profile-box').remove();
+        $(document).off('.rmModal');
+    };
 
-    $('#rm-profile-modal').on('click.rmProf', function (e) {
-        if (e.target.id === 'rm-profile-modal') closeModal();
+    // Close on backdrop click
+    $('#rm-profile-backdrop').on('click.rmModal', closeModal);
+
+    // --- Drag logic (coords are viewport-relative, element is position:fixed → perfect match) ---
+    let isDragging = false, dragStartX = 0, dragStartY = 0, elemStartLeft = 0, elemStartTop = 0;
+    const $box = $('#rm-profile-box');
+
+    $('#rm-modal-drag-handle').on('mousedown.rmModal touchstart.rmModal', function (e) {
+        isDragging = true;
+        const pts = e.type.includes('touch') ? e.originalEvent.touches[0] : e;
+        dragStartX = pts.clientX;
+        dragStartY = pts.clientY;
+        elemStartLeft = parseFloat($box.css('left'));
+        elemStartTop = parseFloat($box.css('top'));
+        $(this).css('cursor', 'grabbing');
+        e.preventDefault();
     });
 
-    $('#rm-modal-cancel').on('click.rmProf', closeModal);
-    $('#rm-modal-clear-av').on('click.rmProf', () => { $('#rm-modal-avatar').val(''); });
+    $(document).on('mousemove.rmModal touchmove.rmModal', function (e) {
+        if (!isDragging) return;
+        e.preventDefault();
+        const pts = e.type.includes('touch') ? e.originalEvent.touches[0] : e;
+        const dx = pts.clientX - dragStartX;
+        const dy = pts.clientY - dragStartY;
+        $box.css({
+            left: Math.max(0, Math.min(elemStartLeft + dx, window.innerWidth - 60)) + 'px',
+            top: Math.max(0, Math.min(elemStartTop + dy, window.innerHeight - 60)) + 'px'
+        });
+    });
 
-    $('#rm-modal-save').on('click.rmProf', () => {
+    $(document).on('mouseup.rmModal touchend.rmModal', function () {
+        if (!isDragging) return;
+        isDragging = false;
+        $('#rm-modal-drag-handle').css('cursor', 'grab');
+    });
+
+    // --- Buttons ---
+    $('#rm-modal-cancel').on('click.rmModal', closeModal);
+    $('#rm-modal-clear-av').on('click.rmModal', () => { $('#rm-modal-avatar').val(''); });
+
+    $('#rm-modal-save').on('click.rmModal', () => {
         const vAv = $('#rm-modal-avatar').val().trim();
         const vDesc = $('#rm-modal-desc').val().trim();
         if (vAv) npcsData[name].avatar = vAv;
@@ -1151,7 +1277,7 @@ window.rmUnbindEvents = function () {
     eventSource.removeListener(event_types.USER_MESSAGE_RENDERED, rmHandleUserMessage);
     if (rmRenderInterval) clearInterval(rmRenderInterval);
     rmEventsBound = false;
-    $('#rm-float-btn, #rm-bar, #rm-popup, #rm-overlay').remove();
+    $('#rm-float-btn, #rm-bar, #rm-popup, #rm-overlay-backdrop, #rm-overlay-box, #rm-profile-backdrop, #rm-profile-box').remove();
     console.log('💕 [RM] Events Unbound / Extension Disabled');
 };
 
